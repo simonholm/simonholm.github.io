@@ -7,14 +7,62 @@
 </head>
 <body>
   <p id="status">Registering WebMCP tool...</p>
+  <button id="list-tools" type="button">List tools</button>
+  <button id="call-hello-world" type="button">Call hello_world</button>
+  <pre id="output" aria-live="polite"></pre>
   <script>
     (async () => {
       const status = document.getElementById("status");
+      const listToolsButton = document.getElementById("list-tools");
+      const callHelloWorldButton = document.getElementById("call-hello-world");
+      const output = document.getElementById("output");
+
+      const showOutput = (value) => {
+        output.textContent = typeof value === "string"
+          ? value
+          : JSON.stringify(value, null, 2);
+      };
+
+      const showError = (error) => {
+        output.textContent = `Error: ${error.message}`;
+      };
 
       if (!document.modelContext || !document.modelContext.registerTool) {
         status.textContent = "WebMCP is not available in this browser.";
+        listToolsButton.disabled = true;
+        callHelloWorldButton.disabled = true;
         return;
       }
+
+      listToolsButton.addEventListener("click", async () => {
+        try {
+          const tools = await document.modelContext.getTools();
+          showOutput(
+            tools.length
+              ? tools.map((tool) => tool.name).join("\n")
+              : "No tools found."
+          );
+        } catch (error) {
+          showError(error);
+        }
+      });
+
+      callHelloWorldButton.addEventListener("click", async () => {
+        try {
+          const tools = await document.modelContext.getTools();
+          const tool = tools.find((candidate) => candidate.name === "hello_world");
+
+          if (!tool) {
+            showOutput("hello_world tool was not found.");
+            return;
+          }
+
+          const result = await document.modelContext.executeTool(tool, "{}");
+          showOutput(result);
+        } catch (error) {
+          showError(error);
+        }
+      });
 
       try {
         await document.modelContext.registerTool({
@@ -25,14 +73,7 @@
             properties: {},
             additionalProperties: false
           },
-          execute: async () => ({
-            content: [
-              {
-                type: "text",
-                text: "Hello from simonholm.github.io"
-              }
-            ]
-          })
+          execute: async () => "Hello from simonholm.github.io"
         });
         status.textContent = "WebMCP tool registered: hello_world";
       } catch (error) {
