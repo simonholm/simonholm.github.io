@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WebMCP Hello World</title>
+</head>
+<body>
+  <p id="status">Registering WebMCP tool...</p>
+  <script>
+    (async () => {
+      const status = document.getElementById("status");
+
+      if (!document.modelContext || !document.modelContext.registerTool) {
+        status.textContent = "WebMCP is not available in this browser.";
+        return;
+      }
+
+      try {
+        await document.modelContext.registerTool({
+          name: "hello_world",
+          description: "Return a hello-world message from simonholm.github.io.",
+          inputSchema: {
+            type: "object",
+            properties: {},
+            additionalProperties: false
+          },
+          execute: async () => ({
+            content: [
+              {
+                type: "text",
+                text: "Hello from simonholm.github.io"
+              }
+            ]
+          })
+        });
+        status.textContent = "WebMCP tool registered: hello_world";
+      } catch (error) {
+        status.textContent = `WebMCP tool registration failed: ${error.message}`;
+      }
+    })();
+  </script>
+</body>
+</html>
