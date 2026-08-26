@@ -9,13 +9,40 @@
   <p id="status">Registering WebMCP tool...</p>
   <button id="list-tools" type="button">List tools</button>
   <button id="call-hello-world" type="button">Call hello_world</button>
+  <input id="project-query" type="text" placeholder="Project query">
+  <button id="call-search-projects" type="button">Call search_projects</button>
   <pre id="output" aria-live="polite"></pre>
   <script>
     (async () => {
       const status = document.getElementById("status");
       const listToolsButton = document.getElementById("list-tools");
       const callHelloWorldButton = document.getElementById("call-hello-world");
+      const projectQueryInput = document.getElementById("project-query");
+      const callSearchProjectsButton =
+        document.getElementById("call-search-projects");
       const output = document.getElementById("output");
+      const projects = [
+        {
+          name: "disk-agent",
+          description: "Command-line disk usage snapshots and explanations."
+        },
+        {
+          name: "disk-maint",
+          description: "Maintenance helpers for build caches and toolchains."
+        },
+        {
+          name: "recall",
+          description: "Local memory search and question answering."
+        },
+        {
+          name: "reel2ocr",
+          description: "Android-first video frame OCR workflow."
+        },
+        {
+          name: "simonholm.github.io",
+          description: "Personal website and browser API experiments."
+        }
+      ];
 
       const showOutput = (value) => {
         output.textContent = typeof value === "string"
@@ -31,6 +58,8 @@
         status.textContent = "WebMCP is not available in this browser.";
         listToolsButton.disabled = true;
         callHelloWorldButton.disabled = true;
+        projectQueryInput.disabled = true;
+        callSearchProjectsButton.disabled = true;
         return;
       }
 
@@ -64,6 +93,31 @@
         }
       });
 
+      callSearchProjectsButton.addEventListener("click", async () => {
+        try {
+          const tools = await document.modelContext.getTools();
+          const tool = tools.find(
+            (candidate) => candidate.name === "search_projects"
+          );
+
+          if (!tool) {
+            showOutput("search_projects tool was not found.");
+            return;
+          }
+
+          const inputArguments = JSON.stringify({
+            query: projectQueryInput.value
+          });
+          const result = await document.modelContext.executeTool(
+            tool,
+            inputArguments
+          );
+          showOutput(result);
+        } catch (error) {
+          showError(error);
+        }
+      });
+
       try {
         await document.modelContext.registerTool({
           name: "hello_world",
@@ -75,7 +129,43 @@
           },
           execute: async () => "Hello from simonholm.github.io"
         });
-        status.textContent = "WebMCP tool registered: hello_world";
+        await document.modelContext.registerTool({
+          name: "search_projects",
+          description: "Search local example projects by name or description.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              query: {
+                type: "string",
+                description: "Search text to match against project names and descriptions."
+              }
+            },
+            required: ["query"],
+            additionalProperties: false
+          },
+          execute: async ({ query }) => {
+            const normalizedQuery = query.trim().toLowerCase();
+
+            if (!normalizedQuery) {
+              return "Enter a project search query.";
+            }
+
+            const matches = projects.filter((project) => {
+              const searchableText =
+                `${project.name} ${project.description}`.toLowerCase();
+              return searchableText.includes(normalizedQuery);
+            });
+
+            if (!matches.length) {
+              return `No projects matched "${query}".`;
+            }
+
+            return matches
+              .map((project) => `${project.name}: ${project.description}`)
+              .join("\n");
+          }
+        });
+        status.textContent = "WebMCP tools registered: hello_world, search_projects";
       } catch (error) {
         status.textContent = `WebMCP tool registration failed: ${error.message}`;
       }
