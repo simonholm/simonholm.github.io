@@ -6,7 +6,7 @@ const error = document.querySelector('#error');
 const summary = document.querySelector('#summary');
 const results = document.querySelector('#results');
 const webmcpStatus = document.querySelector('#webmcp-status');
-let jobAds = [];
+let searching = false;
 
 // Adapted from job-ad's validate_date / is_leap_year. No timezone conversion.
 function validDate(value) {
@@ -23,20 +23,29 @@ function showError(message) {
   summary.textContent = 'No results shown.';
 }
 
-// The one operation used by both the form and the WebMCP callback.
-function filterJobAds(fromDate, toDate) {
-  if (!validDate(fromDate) || !validDate(toDate)) {
-    throw new Error('Enter valid From and To dates in YYYY-MM-DD format.');
+// Adapted from job-ad's CompactAd and WorkplaceAddress::display.
+function compactAd(ad) {
+  const text = value => typeof value === 'string' ? value.trim() || undefined : undefined;
+  const address = ad.workplace_address || {};
+  const parts = [text(address.street_address), [text(address.postcode), text(address.city)].filter(Boolean).join(' ')].filter(Boolean);
+  for (const value of [address.municipality, address.region, address.country].map(text)) {
+    if (value && !parts.some(part => part === value || part.endsWith(` ${value}`))) parts.push(value);
   }
-  if (fromDate > toDate) throw new Error('From date must be on or before To date.');
+  return Object.fromEntries(Object.entries({
+    id: ad.id,
+    headline: text(ad.headline),
+    employer: text(ad.employer?.name),
+    workplace_address: parts.join(', ') || undefined,
+    publication_date: ad.publication_date,
+    last_application_date: text(ad.application_deadline),
+    employment_type: text(ad.employment_type?.label),
+    duration: text(ad.duration?.label),
+    working_hours_type: text(ad.working_hours_type?.label),
+    webpage_url: text(ad.webpage_url)
+  }).filter(([, value]) => value !== undefined));
+}
 
-  const matches = jobAds.filter(ad => {
-    const date = ad.publication_date.slice(0, 10);
-    return date >= fromDate && date <= toDate;
-  });
-
-  fromInput.value = fromDate;
-  toInput.value = toDate;
+function showResults(matches, fromDate, toDate) {
   error.textContent = '';
   results.replaceChildren();
   for (const ad of matches) {
@@ -56,34 +65,87 @@ function filterJobAds(fromDate, toDate) {
   return { from_date: fromDate, to_date: toDate, total: matches.length, job_ads: matches };
 }
 
-form.addEventListener('submit', event => {
-  event.preventDefault();
+// The one async operation used by both the form and the WebMCP callback.
+async function filterJobAds(fromDate, toDate) {
+  // A second caller must not clear or replace the active caller's view.
+  if (searching) return { error: 'A search is already in progress. Wait for it to finish.' };
   try {
-    filterJobAds(fromInput.value, toInput.value);
+    if (!validDate(fromDate) || !validDate(toDate)) {
+      throw new Error('Enter valid From and To dates in YYYY-MM-DD format.');
+    }
+    if (fromDate > toDate) throw new Error('From date must be on or before To date.');
+
+    searching = true;
+    button.disabled = fromInput.disabled = toInput.disabled = true;
+    fromInput.value = fromDate;
+    toInput.value = toDate;
+    error.textContent = '';
+    results.replaceChildren();
+    summary.textContent = 'Loading job ads…';
+
+    const url = new URL('https://jobsearch.api.jobtechdev.se/search');
+    url.search = new URLSearchParams({
+      'published-after': `${fromDate}T00:00:00`,
+      'published-before': `${toDate}T23:59:59`,
+      limit: '100', offset: '0', sort: 'pubdate-desc', resdet: 'full',
+      region: 'xTCk_nT5_Zjm', 'occupation-field': 'apaJ_2ja_LuF'
+    });
+    const signal = AbortSignal.timeout(20_000);
+    const hits = [];
+    const ids = new Set();
+    let expectedTotal;
+    do {
+      url.searchParams.set('offset', String(hits.length));
+      const response = await fetch(url, { headers: { Accept: 'application/json' }, credentials: 'omit', signal });
+      if (!response.ok) throw new Error(`JobTech returned HTTP ${response.status}. Try again later.`);
+      const data = await response.json();
+      signal.throwIfAborted();
+      const total = data?.total?.value;
+      if (!Number.isSafeInteger(total) || total < 0 || !Array.isArray(data.hits)) {
+        throw new Error('JobTech returned an invalid response. No partial results shown.');
+      }
+      if (total > 2100) throw new Error('More than 2,100 ads match. Choose a narrower date range.');
+      if (expectedTotal !== undefined && total !== expectedTotal) {
+        throw new Error('JobTech results changed between pages. Please search again.');
+      }
+      expectedTotal = total;
+      if (data.hits.length !== Math.min(100, total - hits.length)) {
+        throw new Error('JobTech returned an incomplete page. No partial results shown.');
+      }
+      for (const ad of data.hits) {
+        if (!ad || typeof ad.id !== 'string' || !ad.id.trim() || ids.has(ad.id)) {
+          throw new Error('JobTech returned a missing or duplicate ad ID. No partial results shown.');
+        }
+        if (typeof ad.publication_date !== 'string' || !validDate(ad.publication_date.slice(0, 10))) {
+          throw new Error('JobTech returned an invalid publication date. No partial results shown.');
+        }
+        ids.add(ad.id);
+        hits.push(ad);
+      }
+    } while (hits.length < expectedTotal);
+    return showResults(hits.map(compactAd), fromDate, toDate);
   } catch (cause) {
-    showError(cause.message);
+    const message = cause.name === 'TimeoutError'
+      ? 'JobTech search timed out after 20 seconds. Try again or choose a narrower date range.'
+      : cause instanceof TypeError
+        ? 'Could not reach JobTech. Check your connection and try again.'
+        : cause instanceof SyntaxError
+          ? 'JobTech returned invalid JSON. No partial results shown.'
+          : cause.message;
+    showError(message);
+    return { error: message };
+  } finally {
+    searching = false;
+    button.disabled = fromInput.disabled = toInput.disabled = false;
   }
+}
+
+form.addEventListener('submit', async event => {
+  event.preventDefault();
+  await filterJobAds(fromInput.value, toInput.value);
 });
 
 async function start() {
-  try {
-    const response = await fetch('./job-ads.json');
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const data = await response.json();
-    if (!Array.isArray(data) || data.some(ad =>
-      !ad || typeof ad !== 'object' ||
-      typeof ad.publication_date !== 'string' ||
-      !validDate(ad.publication_date.slice(0, 10))
-    )) throw new Error('Expected a compact JSON array with valid publication_date values.');
-    jobAds = data;
-    button.disabled = false;
-    summary.textContent = `${jobAds.length} sample ads loaded. Choose a date range and show job ads.`;
-  } catch (cause) {
-    showError(`Could not load job-ads.json: ${cause.message}`);
-    webmcpStatus.textContent = 'WebMCP tool not registered: sample data unavailable.';
-    return;
-  }
-
   if (typeof document.modelContext?.registerTool !== 'function') {
     webmcpStatus.textContent = 'WebMCP unavailable in this browser. Date filtering still works.';
     return;
@@ -91,7 +153,7 @@ async function start() {
   try {
     await document.modelContext.registerTool({
       name: 'get_job_ads',
-      description: 'Return and show job ads from a small static sample within an inclusive publication-date range. Updates the visible date fields and results only; never modifies job-ad data. Dates use YYYY-MM-DD as recorded, without timezone conversion.',
+      description: 'Fetch and show current JobTech job ads in Örebro län / Data/IT within an inclusive publication-date range. Returns all matches up to 2,100 or an error; not a historical archive. Updates the visible dates and results only; never modifies job-ad data. Dates use YYYY-MM-DD without timezone conversion.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -102,14 +164,7 @@ async function start() {
         additionalProperties: false
       },
       annotations: { readOnlyHint: true, untrustedContentHint: true },
-      execute: async (args = {}) => {
-        try {
-          return JSON.stringify(filterJobAds(args?.from_date, args?.to_date));
-        } catch (cause) {
-          showError(cause.message);
-          return JSON.stringify({ error: cause.message });
-        }
-      }
+      execute: async (args = {}) => JSON.stringify(await filterJobAds(args?.from_date, args?.to_date))
     });
     webmcpStatus.textContent = 'WebMCP ready: get_job_ads registered.';
   } catch (cause) {
